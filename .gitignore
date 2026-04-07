@@ -1,0 +1,9 @@
+*.dll
+*.pdb
+*.mdb
+obj/
+bin/
+.vs/
+*.user
+*.suo
+claude_city_report.json
