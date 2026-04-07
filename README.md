@@ -1,104 +1,126 @@
-# Cities Skylines - Claude Code MCP Advisor
+# Cities Skylines — Claude Code MCP Advisor
 
-A Cities: Skylines mod that exports real-time city statistics to a JSON file, enabling [Claude Code](https://claude.ai/code) to act as a live city advisor through the terminal.
+AI companion for Cities: Skylines that connects [Claude Code](https://claude.ai/code) directly to your running game via [MCP](https://modelcontextprotocol.io/) (Model Context Protocol). Claude can read your city stats, demolish buildings, inject money, change taxes, and manage saves — all from the terminal.
 
-## What it does
+## Architecture
 
-Every 30 seconds, the mod exports a comprehensive JSON report of your city's stats to:
 ```
-~/Library/Application Support/Colossal Order/Cities_Skylines/claude_city_report.json
+Claude Code  <--stdio/MCP-->  Python MCP Server  <--HTTP-->  C# Game Mod (port 7828)
+                                    |                              |
+                               Save Parser                   Game Managers
+                              (.crp files)                  (BuildingManager,
+                                                            EconomyManager, etc.)
 ```
 
-Claude Code reads this file and gives you real-time advice on your city: economy, traffic, services, population, and more.
+## MCP Tools Available
 
-## Stats exported
+### Read Tools
+| Tool | Description |
+|------|-------------|
+| `is_game_running` | Check if the mod is active |
+| `get_city_stats` | Full city report (population, money, services, traffic) |
+| `get_buildings` | List buildings with filters (type, abandoned, burned) |
+| `get_traffic` | Road segments, congestion, flow % |
+| `get_transport` | Bus, metro, train, tram lines |
+| `get_districts` | Districts with population and happiness |
+| `get_budget` | Money, weekly profit |
 
-- Population (by age group)
-- Money & weekly profit/loss
-- Demand (residential, commercial, workplace)
-- Services (electricity, water, sewage, garbage, heating, crime, happiness, education, healthcare)
-- Buildings (by type, abandoned, burned)
-- Traffic (flow %, congested roads with density)
-- Transport lines (bus, metro, train, tram)
-- Auto-generated problems & advice
+### Write Tools
+| Tool | Description |
+|------|-------------|
+| `demolish_building` | Demolish a building by ID |
+| `demolish_all_abandoned` | Mass-demolish all abandoned buildings |
+| `set_money` | Add/remove money |
+| `set_tax_rate` | Change tax rate (0-29%) for any service |
+| `set_budget` | Change service budget (50-150%) |
+| `pause_game` | Pause/unpause simulation |
+| `set_game_speed` | Set speed (1-3) |
 
-## Installation
+### Save File Tools
+| Tool | Description |
+|------|-------------|
+| `list_saves` | List all .crp save files |
+| `read_save_metadata` | Parse save file header |
+| `backup_save` | Create timestamped backup |
 
-### Option A: Pre-compiled DLL
-1. Copy the `ClaudeAdvisor/` folder to:
-   - **Mac**: `~/Library/Application Support/Colossal Order/Cities_Skylines/Addons/Mods/`
-   - **Windows**: `%LOCALAPPDATA%\Colossal Order\Cities_Skylines\Addons\Mods\`
-   - **Linux**: `~/.local/share/Colossal Order/Cities_Skylines/Addons/Mods/`
-2. Enable "Claude City Advisor" in **Content Manager > Mods**
-3. Load a save
+## Quick Install
 
-### Option B: Compile from source (Mac)
 ```bash
-MANAGED="$HOME/Library/Application Support/Steam/steamapps/common/Cities_Skylines/Cities.app/Contents/Resources/Data/Managed"
-MODS="$HOME/Library/Application Support/Colossal Order/Cities_Skylines/Addons/Mods/ClaudeAdvisor"
+git clone https://github.com/BernardUriza/cities-skylines--cc-mcp-advisor.git
+cd cities-skylines--cc-mcp-advisor
 
-mkdir -p "$MODS/Source"
-cp ClaudeAdvisor.cs "$MODS/Source/"
+# Build and install the mod
+bash mod/build.sh
 
-mcs -target:library -out:"$MODS/ClaudeAdvisor.dll" \
-    -r:"$MANAGED/ICities.dll" \
-    -r:"$MANAGED/Assembly-CSharp.dll" \
-    -r:"$MANAGED/ColossalManaged.dll" \
-    -r:"$MANAGED/UnityEngine.dll" \
-    ClaudeAdvisor.cs
+# Install Python deps
+pip install httpx mcp
+
+# Register MCP server in Claude Code
+claude mcp add cities-skylines -- python3 -m mcp_server.server
 ```
 
-## Usage with Claude Code
+Then:
+1. Restart Cities: Skylines
+2. Enable **"Claude City Advisor MCP"** in Content Manager > Mods
+3. Load a save
+4. In Claude Code, ask: *"check my city"* or *"demolish all abandoned buildings"*
 
-1. Start Cities: Skylines and load a city
-2. In your terminal, run `claude`
-3. Ask Claude to check your city:
-   ```
-   > check my city report
-   > what's wrong with my city?
-   > how do I fix the traffic?
-   ```
+## Manual Build (Mac)
 
-Claude reads `claude_city_report.json` and gives you advice based on live data.
-
-## Example output
-
-```json
-{
-  "cityName": "Verville",
-  "population": 14287,
-  "money": 48883930,
-  "moneyFormatted": "$488,839",
-  "weeklyProfit": 518677,
-  "services": {
-    "happiness": 87,
-    "crimeRate": 4,
-    "electricityCapacity": 238256,
-    "electricityConsumption": 208416
-  },
-  "abandonedBuildings": 38,
-  "trafficFlowPercent": 89,
-  "problems": ["High abandoned: 38"],
-  "advice": ["Add metro lines!"]
-}
+```bash
+cd mod/
+bash build.sh
 ```
+
+This compiles all C# sources and installs the DLL to the game's mod directory.
+
+## Test Connection
+
+With the game running and a save loaded:
+
+```bash
+# Direct HTTP test
+curl http://localhost:7828/api/v1/health
+
+# Full connection test
+python3 scripts/test_connection.py
+```
+
+## Project Structure
+
+```
+mod/                          # C# game mod (runs inside Unity)
+  ClaudeAdvisorMod.cs         # Entry point (IUserMod)
+  HttpCommandServer.cs        # HTTP server on port 7828
+  GameActionExecutor.cs       # Write operations (demolish, money, tax)
+  CityDataCollector.cs        # Read operations (stats, buildings, traffic)
+  JsonHelper.cs               # JSON utilities
+  build.sh                    # Compile script
+
+mcp_server/                   # Python MCP server (stdio transport)
+  server.py                   # FastMCP tool definitions
+  game_client.py              # HTTP client for the mod
+  save_parser.py              # .crp binary file parser
+
+scripts/
+  install.sh                  # Full install script
+  test_connection.py          # Connection verification
+```
+
+## How It Works
+
+1. **C# Mod** runs inside Cities Skylines, starts an HTTP server on `localhost:7828`
+2. **Python MCP Server** translates Claude Code tool calls into HTTP requests
+3. **Read operations** access game Singleton managers directly (thread-safe for reads)
+4. **Write operations** use `SimulationManager.AddAction()` to safely dispatch to the simulation thread
 
 ## Requirements
 
-- Cities: Skylines (Steam, any edition)
-- Mono/.NET Framework 3.5 runtime (for compilation)
-
-## How it works
-
-The mod implements `IUserMod` and `LoadingExtensionBase` from the ICities API. On level load, it creates a Unity `MonoBehaviour` that runs `ExportStats()` every 30 seconds, reading from the game's internal managers:
-
-- `DistrictManager` - population, services, happiness
-- `EconomyManager` - money, profit
-- `ZoneManager` - demand
-- `BuildingManager` - building counts, abandoned/burned
-- `VehicleManager` - vehicle counts
-- `NetManager` - road segments, traffic density
-- `TransportManager` - transport lines
+- Cities: Skylines (Steam)
+- macOS / Linux (Windows support planned)
+- Python 3.10+
+- Mono (for compiling: `brew install mono`)
+- Claude Code
 
 ## License
 
