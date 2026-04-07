@@ -155,6 +155,24 @@ async def set_game_speed(speed: int) -> dict:
     return await client.post("/api/v1/actions/speed", {"speed": speed})
 
 
+# ─── Visual Tools ─────────────────────────────────────────
+
+@mcp.tool()
+async def take_screenshot() -> dict:
+    """Take a screenshot of the current game view. Returns the file path
+    to the PNG image. Use this to visually inspect the city layout,
+    check building placement, traffic patterns, or anything visual."""
+    result = await client.get("/api/v1/screenshot")
+    if result.get("success") and result.get("data", {}).get("path"):
+        return {
+            "success": True,
+            "message": "Screenshot captured. Read the image file to see the city.",
+            "path": result["data"]["path"],
+            "size_kb": result["data"].get("size_kb", 0),
+        }
+    return result
+
+
 # ─── Save File Tools ──────────────────────────────────────
 
 @mcp.tool()

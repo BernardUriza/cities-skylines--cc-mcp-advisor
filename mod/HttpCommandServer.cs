@@ -14,6 +14,47 @@ namespace ClaudeAdvisor
         private bool _running;
         private const int PORT = 7828;
 
+        // Screenshot support — queued from HTTP thread, executed on Unity main thread
+        private volatile bool _screenshotRequested;
+        private volatile bool _screenshotReady;
+        private string _screenshotPath;
+        private static readonly string SCREENSHOT_DIR = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Personal),
+            "Library/Application Support/Colossal Order/Cities_Skylines"
+        );
+
+        void Update()
+        {
+            // Execute screenshot on main thread (Unity requirement)
+            if (_screenshotRequested)
+            {
+                _screenshotRequested = false;
+                try
+                {
+                    if (!Directory.Exists(SCREENSHOT_DIR))
+                        Directory.CreateDirectory(SCREENSHOT_DIR);
+                    _screenshotPath = Path.Combine(SCREENSHOT_DIR, "claude_screenshot.png");
+                    Application.CaptureScreenshot(_screenshotPath);
+                    Debug.Log("[ClaudeAdvisor] Screenshot captured to: " + _screenshotPath);
+                    // Wait a frame for the file to be written
+                    StartCoroutine(MarkScreenshotReady());
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError("[ClaudeAdvisor] Screenshot failed: " + ex.Message);
+                    _screenshotReady = true; // unblock the waiting thread even on failure
+                }
+            }
+        }
+
+        private System.Collections.IEnumerator MarkScreenshotReady()
+        {
+            // Wait 2 frames for Unity to finish writing the file
+            yield return new WaitForEndOfFrame();
+            yield return new WaitForEndOfFrame();
+            _screenshotReady = true;
+        }
+
         void Start()
         {
             try
@@ -136,6 +177,14 @@ namespace ClaudeAdvisor
                             SendResponse(ctx, 200, WrapSuccess(JsonHelper.ToJson(budget)));
                             return;
 
+                        case "/api/v1/screenshot":
+                            HandleScreenshot(ctx);
+                            return;
+
+                        case "/api/v1/screenshot/image":
+                            ServeScreenshotImage(ctx);
+                            return;
+
                         default:
                             SendResponse(ctx, 404, WrapError("Unknown endpoint: " + path));
                             return;
@@ -194,6 +243,69 @@ namespace ClaudeAdvisor
             {
                 Debug.LogError("[ClaudeAdvisor] Request error: " + ex.ToString());
                 try { SendResponse(ctx, 500, WrapError(ex.Message)); } catch { }
+            }
+        }
+
+        // --- Screenshot Handlers ---
+
+        private void HandleScreenshot(HttpListenerContext ctx)
+        {
+            _screenshotReady = false;
+            _screenshotRequested = true;
+
+            // Wait for main thread to capture (up to 5 seconds)
+            int waited = 0;
+            while (!_screenshotReady && waited < 5000)
+            {
+                Thread.Sleep(50);
+                waited += 50;
+            }
+
+            if (!_screenshotReady)
+            {
+                SendResponse(ctx, 500, WrapError("Screenshot timed out"));
+                return;
+            }
+
+            // Verify file exists
+            if (!string.IsNullOrEmpty(_screenshotPath) && File.Exists(_screenshotPath))
+            {
+                var info = new FileInfo(_screenshotPath);
+                SendResponse(ctx, 200, WrapSuccess(JsonHelper.ToJson(new Dictionary<string, object> {
+                    {"action", "screenshot"},
+                    {"path", _screenshotPath},
+                    {"size_kb", (int)(info.Length / 1024)},
+                    {"imageUrl", "http://localhost:" + PORT + "/api/v1/screenshot/image"},
+                    {"timestamp", DateTime.Now.ToString("o")}
+                })));
+            }
+            else
+            {
+                SendResponse(ctx, 500, WrapError("Screenshot file not found after capture"));
+            }
+        }
+
+        private void ServeScreenshotImage(HttpListenerContext ctx)
+        {
+            string path = Path.Combine(SCREENSHOT_DIR, "claude_screenshot.png");
+            if (!File.Exists(path))
+            {
+                SendResponse(ctx, 404, WrapError("No screenshot available. Call /api/v1/screenshot first."));
+                return;
+            }
+
+            try
+            {
+                byte[] imageBytes = File.ReadAllBytes(path);
+                ctx.Response.ContentType = "image/png";
+                ctx.Response.ContentLength64 = imageBytes.Length;
+                ctx.Response.StatusCode = 200;
+                ctx.Response.OutputStream.Write(imageBytes, 0, imageBytes.Length);
+                ctx.Response.OutputStream.Close();
+            }
+            catch (Exception ex)
+            {
+                SendResponse(ctx, 500, WrapError("Failed to serve image: " + ex.Message));
             }
         }
 
