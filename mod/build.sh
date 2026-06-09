@@ -39,9 +39,11 @@ mcs -target:library \
     -r:"$MANAGED/System.Core.dll" \
     "$SCRIPT_DIR/ClaudeAdvisorMod.cs" \
     "$SCRIPT_DIR/HttpCommandServer.cs" \
+    "$SCRIPT_DIR/RequestHandler.cs" \
     "$SCRIPT_DIR/GameActionExecutor.cs" \
     "$SCRIPT_DIR/CityDataCollector.cs" \
-    "$SCRIPT_DIR/JsonHelper.cs"
+    "$SCRIPT_DIR/JsonHelper.cs" \
+    "$SCRIPT_DIR/Logger.cs"
 
 if [ $? -eq 0 ]; then
     echo "BUILD SUCCESS: $MODS/ClaudeAdvisor.dll"

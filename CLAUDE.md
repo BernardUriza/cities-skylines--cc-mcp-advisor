@@ -51,9 +51,12 @@ python3 -m mcp_server.server
 - `GET /api/v1/stats` — full city stats
 - `GET /api/v1/buildings?type=X&flags=X&limit=N` — building list
 - `GET /api/v1/traffic` — traffic data
+- `GET /api/v1/traffic/graph?limit=N&minDensity=N` — full road network graph (nodes + edges for GNN/PyTorch)
 - `GET /api/v1/transport` — transport lines
 - `GET /api/v1/districts` — districts
-- `GET /api/v1/budget` — economy
+- `GET /api/v1/budget` — economy with income/expense breakdown by service
+- `GET /api/v1/problems` — all building problems (electricity, water, fire, crime, etc.)
+- `GET /api/v1/changes` — delta detection between polls (population, money, abandoned, traffic)
 - `POST /api/v1/actions/demolish` — `{"buildingId": N}`
 - `POST /api/v1/actions/demolish-abandoned` — mass demolish
 - `POST /api/v1/actions/money` — `{"amount": N}`
@@ -61,6 +64,7 @@ python3 -m mcp_server.server
 - `POST /api/v1/actions/budget` — `{"service": "X", "budget": N}`
 - `POST /api/v1/actions/speed` — `{"speed": 1-3}`
 - `POST /api/v1/actions/pause` — `{"paused": true/false}`
+- `POST /api/v1/actions/chirp` — `{"message": "text"}` — send message to in-game Chirper
 
 ## Repo
 - **GitHub:** https://github.com/BernardUriza/cities-skylines--cc-mcp-advisor

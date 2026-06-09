@@ -1,5 +1,6 @@
 using System;
 using ColossalFramework;
+using ICities;
 using UnityEngine;
 
 namespace ClaudeAdvisor
@@ -8,19 +9,28 @@ namespace ClaudeAdvisor
     {
         public static void DemolishBuilding(ushort buildingId)
         {
+            Logger.ActionQueued("DemolishBuilding", "buildingId=" + buildingId);
             Singleton<SimulationManager>.instance.AddAction(() =>
             {
                 try
                 {
                     var bm = Singleton<BuildingManager>.instance;
-                    if (buildingId >= bm.m_buildings.m_buffer.Length) return;
-                    if (bm.m_buildings.m_buffer[buildingId].m_flags == Building.Flags.None) return;
+                    if (buildingId >= bm.m_buildings.m_buffer.Length)
+                    {
+                        Logger.Warn("Action", "DemolishBuilding: invalid ID", "buildingId=" + buildingId + " bufferLength=" + bm.m_buildings.m_buffer.Length);
+                        return;
+                    }
+                    if (bm.m_buildings.m_buffer[buildingId].m_flags == Building.Flags.None)
+                    {
+                        Logger.Warn("Action", "DemolishBuilding: building has no flags (already demolished?)", "buildingId=" + buildingId);
+                        return;
+                    }
                     bm.ReleaseBuilding(buildingId);
-                    Debug.Log("[ClaudeAdvisor] Demolished building " + buildingId);
+                    Logger.ActionExecuted("DemolishBuilding", "buildingId=" + buildingId);
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError("[ClaudeAdvisor] Demolish failed: " + ex.Message);
+                    Logger.ActionFailed("DemolishBuilding", ex);
                 }
             });
         }
@@ -50,57 +60,58 @@ namespace ClaudeAdvisor
                         }
                         catch (Exception ex)
                         {
-                            Debug.LogError("[ClaudeAdvisor] Demolish abandoned failed: " + ex.Message);
+                            Logger.ActionFailed("DemolishAbandoned[" + id + "]", ex);
                         }
                     });
                 }
             }
-            Debug.Log("[ClaudeAdvisor] Queued demolition of " + count + " abandoned buildings");
+            Logger.ActionQueued("DemolishAllAbandoned", "count=" + count);
             return count;
         }
 
         public static void InjectMoney(int amount)
         {
+            Logger.ActionQueued("InjectMoney", "amount=$" + amount);
             Singleton<SimulationManager>.instance.AddAction(() =>
             {
                 try
                 {
                     var econ = Singleton<EconomyManager>.instance;
-                    // amount is in game units (1 = $0.01, so multiply by 100)
                     econ.AddResource(EconomyManager.Resource.LoanAmount, amount * 100,
                         ItemClass.Service.None, ItemClass.SubService.None, ItemClass.Level.None);
-                    Debug.Log("[ClaudeAdvisor] Injected $" + amount);
+                    Logger.ActionExecuted("InjectMoney", "amount=$" + amount);
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError("[ClaudeAdvisor] Money inject failed: " + ex.Message);
+                    Logger.ActionFailed("InjectMoney", ex);
                 }
             });
         }
 
         public static void SetTaxRate(string serviceName, int rate)
         {
+            Logger.ActionQueued("SetTaxRate", "service=" + serviceName + " rate=" + rate + "%");
             Singleton<SimulationManager>.instance.AddAction(() =>
             {
                 try
                 {
                     var econ = Singleton<EconomyManager>.instance;
                     ItemClass.Service service = ParseService(serviceName);
-                    // Set tax for all sub-services and levels
                     econ.SetTaxRate(service, ItemClass.SubService.None, ItemClass.Level.Level1, rate);
                     econ.SetTaxRate(service, ItemClass.SubService.None, ItemClass.Level.Level2, rate);
                     econ.SetTaxRate(service, ItemClass.SubService.None, ItemClass.Level.Level3, rate);
-                    Debug.Log("[ClaudeAdvisor] Set " + serviceName + " tax to " + rate + "%");
+                    Logger.ActionExecuted("SetTaxRate", "service=" + serviceName + " rate=" + rate + "%");
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError("[ClaudeAdvisor] Tax rate failed: " + ex.Message);
+                    Logger.ActionFailed("SetTaxRate", ex);
                 }
             });
         }
 
         public static void SetBudget(string serviceName, int budget)
         {
+            Logger.ActionQueued("SetBudget", "service=" + serviceName + " budget=" + budget + "%");
             Singleton<SimulationManager>.instance.AddAction(() =>
             {
                 try
@@ -108,50 +119,74 @@ namespace ClaudeAdvisor
                     var econ = Singleton<EconomyManager>.instance;
                     ItemClass.Service service = ParseService(serviceName);
                     econ.SetBudget(service, ItemClass.SubService.None, budget, false);
-                    Debug.Log("[ClaudeAdvisor] Set " + serviceName + " budget to " + budget + "%");
+                    Logger.ActionExecuted("SetBudget", "service=" + serviceName + " budget=" + budget + "%");
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError("[ClaudeAdvisor] Budget failed: " + ex.Message);
+                    Logger.ActionFailed("SetBudget", ex);
                 }
             });
         }
 
         public static void SetSpeed(int speed)
         {
+            Logger.ActionQueued("SetSpeed", "speed=" + speed);
             Singleton<SimulationManager>.instance.AddAction(() =>
             {
                 try
                 {
                     Singleton<SimulationManager>.instance.SelectedSimulationSpeed = speed;
-                    Debug.Log("[ClaudeAdvisor] Set speed to " + speed);
+                    Logger.ActionExecuted("SetSpeed", "speed=" + speed);
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError("[ClaudeAdvisor] Speed failed: " + ex.Message);
+                    Logger.ActionFailed("SetSpeed", ex);
                 }
             });
         }
 
         public static void SetPaused(bool paused)
         {
+            Logger.ActionQueued("SetPaused", "paused=" + paused);
             Singleton<SimulationManager>.instance.AddAction(() =>
             {
                 try
                 {
                     Singleton<SimulationManager>.instance.SimulationPaused = paused;
-                    Debug.Log("[ClaudeAdvisor] " + (paused ? "Paused" : "Unpaused") + " game");
+                    Logger.ActionExecuted("SetPaused", "paused=" + paused);
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError("[ClaudeAdvisor] Pause failed: " + ex.Message);
+                    Logger.ActionFailed("SetPaused", ex);
+                }
+            });
+        }
+
+        public static void SendChirperMessage(string message)
+        {
+            Logger.ActionQueued("SendChirp", "length=" + message.Length);
+            Singleton<SimulationManager>.instance.AddAction(() =>
+            {
+                try
+                {
+                    var mm = Singleton<MessageManager>.instance;
+                    mm.QueueMessage(new ClaudeChirperMessage(message));
+                    Logger.ActionExecuted("SendChirp", "message=" + message);
+                }
+                catch (Exception ex)
+                {
+                    Logger.ActionFailed("SendChirp", ex);
                 }
             });
         }
 
         private static ItemClass.Service ParseService(string name)
         {
-            if (string.IsNullOrEmpty(name)) return ItemClass.Service.Residential;
+            if (string.IsNullOrEmpty(name))
+            {
+                Logger.Warn("Action", "ParseService: empty name, defaulting to Residential");
+                return ItemClass.Service.Residential;
+            }
             switch (name.ToLower())
             {
                 case "residential": return ItemClass.Service.Residential;
@@ -168,8 +203,35 @@ namespace ClaudeAdvisor
                 case "education": return ItemClass.Service.Education;
                 case "monument": return ItemClass.Service.Monument;
                 case "beautification": case "parks": return ItemClass.Service.Beautification;
-                default: return ItemClass.Service.Residential;
+                default:
+                    Logger.Warn("Action", "ParseService: unknown service name, defaulting to Residential", "name=" + name);
+                    return ItemClass.Service.Residential;
             }
+        }
+    }
+
+    public class ClaudeChirperMessage : MessageBase
+    {
+        private string m_text;
+
+        public ClaudeChirperMessage(string text)
+        {
+            m_text = text;
+        }
+
+        public override string GetSenderName()
+        {
+            return "Claude Advisor";
+        }
+
+        public override string GetText()
+        {
+            return m_text;
+        }
+
+        public override uint GetSenderID()
+        {
+            return 0;
         }
     }
 }

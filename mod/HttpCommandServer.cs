@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Text;
@@ -13,6 +14,7 @@ namespace ClaudeAdvisor
         private HttpListener _listener;
         private bool _running;
         private const int PORT = 7828;
+        private RequestHandler _handler;
 
         // Screenshot support — queued from HTTP thread, executed on Unity main thread
         private volatile bool _screenshotRequested;
@@ -25,7 +27,6 @@ namespace ClaudeAdvisor
 
         void Update()
         {
-            // Execute screenshot on main thread (Unity requirement)
             if (_screenshotRequested)
             {
                 _screenshotRequested = false;
@@ -35,21 +36,19 @@ namespace ClaudeAdvisor
                         Directory.CreateDirectory(SCREENSHOT_DIR);
                     _screenshotPath = Path.Combine(SCREENSHOT_DIR, "claude_screenshot.png");
                     Application.CaptureScreenshot(_screenshotPath);
-                    Debug.Log("[ClaudeAdvisor] Screenshot captured to: " + _screenshotPath);
-                    // Wait a frame for the file to be written
+                    Logger.Info("Screenshot", "Captured to " + _screenshotPath);
                     StartCoroutine(MarkScreenshotReady());
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError("[ClaudeAdvisor] Screenshot failed: " + ex.Message);
-                    _screenshotReady = true; // unblock the waiting thread even on failure
+                    Logger.Error("Screenshot", "Capture failed", ex);
+                    _screenshotReady = true;
                 }
             }
         }
 
         private System.Collections.IEnumerator MarkScreenshotReady()
         {
-            // Wait 2 frames for Unity to finish writing the file
             yield return new WaitForEndOfFrame();
             yield return new WaitForEndOfFrame();
             _screenshotReady = true;
@@ -57,6 +56,7 @@ namespace ClaudeAdvisor
 
         void Start()
         {
+            _handler = new RequestHandler();
             try
             {
                 _listener = new HttpListener();
@@ -64,11 +64,11 @@ namespace ClaudeAdvisor
                 _listener.Start();
                 _running = true;
                 _listener.BeginGetContext(OnRequest, null);
-                Debug.Log("[ClaudeAdvisor] HTTP server running on http://localhost:" + PORT);
+                Logger.Info("Server", "HTTP server started on port " + PORT);
             }
             catch (Exception ex)
             {
-                Debug.LogError("[ClaudeAdvisor] Failed to start HTTP server: " + ex.Message);
+                Logger.Error("Server", "Failed to start HTTP server", ex);
             }
         }
 
@@ -81,7 +81,7 @@ namespace ClaudeAdvisor
                 catch (Exception) { }
                 _listener = null;
             }
-            Debug.Log("[ClaudeAdvisor] HTTP server stopped.");
+            Logger.Info("Server", "HTTP server stopped");
         }
 
         void OnDestroy()
@@ -98,96 +98,103 @@ namespace ClaudeAdvisor
             {
                 ctx = _listener.EndGetContext(ar);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Logger.Warn("Server", "EndGetContext failed", ex.GetType().Name);
                 if (_running) try { _listener.BeginGetContext(OnRequest, null); } catch { }
                 return;
             }
 
-            // Listen for next request immediately
             try { _listener.BeginGetContext(OnRequest, null); } catch { }
 
-            // Handle this request on ThreadPool
             ThreadPool.QueueUserWorkItem(_ => HandleRequest(ctx));
         }
 
         private void HandleRequest(HttpListenerContext ctx)
         {
+            string method = ctx.Request.HttpMethod;
+            string path = ctx.Request.Url.AbsolutePath;
+
+            // Read or generate correlation ID for end-to-end tracing
+            string cid = ctx.Request.Headers["X-Correlation-ID"];
+            if (string.IsNullOrEmpty(cid))
+                cid = Logger.NewCorrelationId();
+            else
+                Logger.CorrelationId = cid;
+
+            Stopwatch sw = Logger.RequestStart(method, path);
+
             try
             {
-                string method = ctx.Request.HttpMethod;
-                string path = ctx.Request.Url.AbsolutePath;
                 var query = ctx.Request.QueryString;
 
                 ctx.Response.ContentType = "application/json";
                 ctx.Response.Headers.Add("Access-Control-Allow-Origin", "*");
+                ctx.Response.Headers.Add("X-Correlation-ID", cid);
 
-                // CORS preflight
                 if (method == "OPTIONS")
                 {
                     ctx.Response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                    ctx.Response.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
-                    SendResponse(ctx, 200, "{\"ok\":true}");
+                    ctx.Response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, X-Correlation-ID");
+                    SendJson(ctx, 200, "{\"ok\":true}");
+                    Logger.RequestEnd(method, path, 200, sw);
                     return;
                 }
 
-                // Route dispatch
+                ServiceResult result = null;
+
                 if (method == "GET")
                 {
                     switch (path)
                     {
                         case "/api/v1/health":
-                            SendResponse(ctx, 200, JsonHelper.ToJson(new Dictionary<string, object> {
-                                {"status", "ok"}, {"mod", "ClaudeAdvisor MCP"}, {"port", PORT}
-                            }));
-                            return;
-
+                            result = _handler.Health();
+                            break;
                         case "/api/v1/stats":
-                            var stats = CityDataCollector.GetFullStats();
-                            SendResponse(ctx, 200, WrapSuccess(JsonHelper.ToJson(stats)));
-                            return;
-
+                            result = _handler.GetStats();
+                            break;
                         case "/api/v1/buildings":
                             string typeFilter = query["type"] ?? "";
                             string flagFilter = query["flags"] ?? "";
                             int limit = 100;
                             if (query["limit"] != null) int.TryParse(query["limit"], out limit);
-                            var buildings = CityDataCollector.GetBuildingsList(typeFilter, flagFilter, limit);
-                            SendResponse(ctx, 200, WrapSuccess("{\"buildings\":" + JsonHelper.ValueToJson(buildings) + ",\"count\":" + buildings.Count + "}"));
-                            return;
-
+                            result = _handler.GetBuildings(typeFilter, flagFilter, limit);
+                            break;
                         case "/api/v1/traffic":
-                            var dm = ColossalFramework.Singleton<DistrictManager>.instance;
-                            var traffic = CityDataCollector.GetTrafficSummary();
-                            SendResponse(ctx, 200, WrapSuccess(JsonHelper.ToJson(traffic)));
-                            return;
-
+                            result = _handler.GetTraffic();
+                            break;
+                        case "/api/v1/traffic/graph":
+                            int graphLimit = 10000;
+                            int graphMinDensity = 0;
+                            if (query["limit"] != null) int.TryParse(query["limit"], out graphLimit);
+                            if (query["minDensity"] != null) int.TryParse(query["minDensity"], out graphMinDensity);
+                            result = _handler.GetTrafficGraph(graphLimit, graphMinDensity);
+                            break;
                         case "/api/v1/transport":
-                            var transport = CityDataCollector.GetTransportSummary();
-                            SendResponse(ctx, 200, WrapSuccess(JsonHelper.ToJson(transport)));
-                            return;
-
+                            result = _handler.GetTransport();
+                            break;
                         case "/api/v1/districts":
-                            var districts = CityDataCollector.GetDistrictsList();
-                            SendResponse(ctx, 200, WrapSuccess("{\"districts\":" + JsonHelper.ValueToJson(districts) + "}"));
-                            return;
-
+                            result = _handler.GetDistricts();
+                            break;
                         case "/api/v1/budget":
-                            var budget = CityDataCollector.GetBudgetInfo();
-                            SendResponse(ctx, 200, WrapSuccess(JsonHelper.ToJson(budget)));
-                            return;
-
+                            result = _handler.GetBudget();
+                            break;
+                        case "/api/v1/problems":
+                            result = _handler.GetProblems();
+                            break;
+                        case "/api/v1/changes":
+                            result = _handler.GetChanges();
+                            break;
                         case "/api/v1/screenshot":
-                            HandleScreenshot(ctx);
-                            return;
-
+                            result = WaitForScreenshot();
+                            break;
                         case "/api/v1/screenshot/image":
-                            ServeScreenshotImage(ctx);
-                            return;
-
+                            result = _handler.GetScreenshotImage();
+                            break;
                         default:
-                            SendResponse(ctx, 404, WrapError("Unknown endpoint: " + path));
-                            return;
+                            Logger.Warn("HTTP", "Unknown endpoint", "path=" + path);
+                            result = ServiceResult.Error(404, "Unknown endpoint: " + path);
+                            break;
                     }
                 }
                 else if (method == "POST")
@@ -197,63 +204,77 @@ namespace ClaudeAdvisor
                     {
                         body = reader.ReadToEnd();
                     }
+                    Logger.Debug("HTTP", "POST body received", "length=" + body.Length);
                     var parsed = JsonHelper.ParseSimpleJson(body);
 
                     switch (path)
                     {
                         case "/api/v1/actions/demolish":
-                            HandleDemolish(ctx, parsed);
-                            return;
-
+                            result = _handler.Demolish(parsed);
+                            break;
                         case "/api/v1/actions/demolish-abandoned":
-                            HandleDemolishAbandoned(ctx);
-                            return;
-
+                            result = _handler.DemolishAbandoned();
+                            break;
                         case "/api/v1/actions/money":
-                            HandleMoney(ctx, parsed);
-                            return;
-
+                            result = _handler.AddMoney(parsed);
+                            break;
                         case "/api/v1/actions/tax":
-                            HandleTax(ctx, parsed);
-                            return;
-
+                            result = _handler.SetTax(parsed);
+                            break;
                         case "/api/v1/actions/budget":
-                            HandleBudget(ctx, parsed);
-                            return;
-
+                            result = _handler.SetBudget(parsed);
+                            break;
                         case "/api/v1/actions/speed":
-                            HandleSpeed(ctx, parsed);
-                            return;
-
+                            result = _handler.SetSpeed(parsed);
+                            break;
                         case "/api/v1/actions/pause":
-                            HandlePause(ctx, parsed);
-                            return;
-
+                            result = _handler.SetPaused(parsed);
+                            break;
+                        case "/api/v1/actions/chirp":
+                            result = _handler.SendChirp(parsed);
+                            break;
                         default:
-                            SendResponse(ctx, 404, WrapError("Unknown action: " + path));
-                            return;
+                            Logger.Warn("HTTP", "Unknown action", "path=" + path);
+                            result = ServiceResult.Error(404, "Unknown action: " + path);
+                            break;
                     }
                 }
                 else
                 {
-                    SendResponse(ctx, 405, WrapError("Method not allowed"));
+                    result = ServiceResult.Error(405, "Method not allowed");
                 }
+
+                SendResult(ctx, result);
+                Logger.RequestEnd(method, path, result.StatusCode, sw);
             }
             catch (Exception ex)
             {
-                Debug.LogError("[ClaudeAdvisor] Request error: " + ex.ToString());
-                try { SendResponse(ctx, 500, WrapError(ex.Message)); } catch { }
+                Logger.Error("HTTP", "Unhandled exception in " + method + " " + path, ex);
+                try
+                {
+                    var errResult = ServiceResult.Error(500, ex.Message);
+                    SendResult(ctx, errResult);
+                    Logger.RequestEnd(method, path, 500, sw);
+                }
+                catch (Exception sendEx)
+                {
+                    Logger.Error("HTTP", "Failed to send error response", sendEx);
+                }
+            }
+            finally
+            {
+                Logger.ClearCorrelationId();
             }
         }
 
-        // --- Screenshot Handlers ---
+        // --- Screenshot orchestration (needs Unity main thread) ---
 
-        private void HandleScreenshot(HttpListenerContext ctx)
+        private ServiceResult WaitForScreenshot()
         {
+            Logger.Info("Screenshot", "Waiting for main thread capture");
             _screenshotReady = false;
             _screenshotRequested = true;
 
-            // Wait for main thread to capture (up to 5 seconds)
             int waited = 0;
             while (!_screenshotReady && waited < 5000)
             {
@@ -263,170 +284,40 @@ namespace ClaudeAdvisor
 
             if (!_screenshotReady)
             {
-                SendResponse(ctx, 500, WrapError("Screenshot timed out"));
-                return;
+                Logger.Error("Screenshot", "Timed out after 5000ms");
+                return ServiceResult.Error(500, "Screenshot timed out");
             }
 
-            // Verify file exists
-            if (!string.IsNullOrEmpty(_screenshotPath) && File.Exists(_screenshotPath))
-            {
-                var info = new FileInfo(_screenshotPath);
-                SendResponse(ctx, 200, WrapSuccess(JsonHelper.ToJson(new Dictionary<string, object> {
-                    {"action", "screenshot"},
-                    {"path", _screenshotPath},
-                    {"size_kb", (int)(info.Length / 1024)},
-                    {"imageUrl", "http://localhost:" + PORT + "/api/v1/screenshot/image"},
-                    {"timestamp", DateTime.Now.ToString("o")}
-                })));
-            }
-            else
-            {
-                SendResponse(ctx, 500, WrapError("Screenshot file not found after capture"));
-            }
+            Logger.Info("Screenshot", "Ready", "waited=" + waited + "ms");
+            return _handler.GetScreenshotInfo(_screenshotPath);
         }
 
-        private void ServeScreenshotImage(HttpListenerContext ctx)
-        {
-            string path = Path.Combine(SCREENSHOT_DIR, "claude_screenshot.png");
-            if (!File.Exists(path))
-            {
-                SendResponse(ctx, 404, WrapError("No screenshot available. Call /api/v1/screenshot first."));
-                return;
-            }
+        // --- HTTP Response Helpers ---
 
+        private void SendResult(HttpListenerContext ctx, ServiceResult result)
+        {
             try
             {
-                byte[] imageBytes = File.ReadAllBytes(path);
-                ctx.Response.ContentType = "image/png";
-                ctx.Response.ContentLength64 = imageBytes.Length;
-                ctx.Response.StatusCode = 200;
-                ctx.Response.OutputStream.Write(imageBytes, 0, imageBytes.Length);
-                ctx.Response.OutputStream.Close();
+                if (result.Binary != null)
+                {
+                    ctx.Response.ContentType = result.ContentType;
+                    ctx.Response.ContentLength64 = result.Binary.Length;
+                    ctx.Response.StatusCode = result.StatusCode;
+                    ctx.Response.OutputStream.Write(result.Binary, 0, result.Binary.Length);
+                    ctx.Response.OutputStream.Close();
+                }
+                else
+                {
+                    SendJson(ctx, result.StatusCode, result.Json);
+                }
             }
             catch (Exception ex)
             {
-                SendResponse(ctx, 500, WrapError("Failed to serve image: " + ex.Message));
+                Logger.Error("HTTP", "SendResult failed", ex);
             }
         }
 
-        // --- Action Handlers ---
-
-        private void HandleDemolish(HttpListenerContext ctx, Dictionary<string, string> body)
-        {
-            string idStr;
-            if (!body.TryGetValue("buildingId", out idStr))
-            {
-                SendResponse(ctx, 400, WrapError("Missing buildingId"));
-                return;
-            }
-            int buildingId;
-            if (!int.TryParse(idStr, out buildingId))
-            {
-                SendResponse(ctx, 400, WrapError("Invalid buildingId"));
-                return;
-            }
-            GameActionExecutor.DemolishBuilding((ushort)buildingId);
-            SendResponse(ctx, 200, WrapSuccess("{\"action\":\"demolish\",\"buildingId\":" + buildingId + ",\"queued\":true}"));
-        }
-
-        private void HandleDemolishAbandoned(HttpListenerContext ctx)
-        {
-            int count = GameActionExecutor.DemolishAllAbandoned();
-            SendResponse(ctx, 200, WrapSuccess("{\"action\":\"demolish-abandoned\",\"count\":" + count + ",\"queued\":true}"));
-        }
-
-        private void HandleMoney(HttpListenerContext ctx, Dictionary<string, string> body)
-        {
-            string amtStr;
-            if (!body.TryGetValue("amount", out amtStr))
-            {
-                SendResponse(ctx, 400, WrapError("Missing amount"));
-                return;
-            }
-            int amount;
-            if (!int.TryParse(amtStr, out amount))
-            {
-                SendResponse(ctx, 400, WrapError("Invalid amount"));
-                return;
-            }
-            GameActionExecutor.InjectMoney(amount);
-            SendResponse(ctx, 200, WrapSuccess("{\"action\":\"money\",\"amount\":" + amount + ",\"queued\":true}"));
-        }
-
-        private void HandleTax(HttpListenerContext ctx, Dictionary<string, string> body)
-        {
-            string rateStr;
-            if (!body.TryGetValue("rate", out rateStr))
-            {
-                SendResponse(ctx, 400, WrapError("Missing rate"));
-                return;
-            }
-            int rate;
-            if (!int.TryParse(rateStr, out rate) || rate < 0 || rate > 29)
-            {
-                SendResponse(ctx, 400, WrapError("Invalid rate (0-29)"));
-                return;
-            }
-            string service = "";
-            body.TryGetValue("service", out service);
-            GameActionExecutor.SetTaxRate(service ?? "Residential", rate);
-            SendResponse(ctx, 200, WrapSuccess("{\"action\":\"tax\",\"service\":\"" + JsonHelper.Escape(service) + "\",\"rate\":" + rate + ",\"queued\":true}"));
-        }
-
-        private void HandleBudget(HttpListenerContext ctx, Dictionary<string, string> body)
-        {
-            string budgetStr;
-            if (!body.TryGetValue("budget", out budgetStr))
-            {
-                SendResponse(ctx, 400, WrapError("Missing budget"));
-                return;
-            }
-            int budget;
-            if (!int.TryParse(budgetStr, out budget) || budget < 50 || budget > 150)
-            {
-                SendResponse(ctx, 400, WrapError("Invalid budget (50-150)"));
-                return;
-            }
-            string service = "";
-            body.TryGetValue("service", out service);
-            GameActionExecutor.SetBudget(service ?? "HealthCare", budget);
-            SendResponse(ctx, 200, WrapSuccess("{\"action\":\"budget\",\"service\":\"" + JsonHelper.Escape(service) + "\",\"budget\":" + budget + ",\"queued\":true}"));
-        }
-
-        private void HandleSpeed(HttpListenerContext ctx, Dictionary<string, string> body)
-        {
-            string speedStr;
-            if (!body.TryGetValue("speed", out speedStr))
-            {
-                SendResponse(ctx, 400, WrapError("Missing speed"));
-                return;
-            }
-            int speed;
-            if (!int.TryParse(speedStr, out speed) || speed < 1 || speed > 3)
-            {
-                SendResponse(ctx, 400, WrapError("Invalid speed (1-3)"));
-                return;
-            }
-            GameActionExecutor.SetSpeed(speed);
-            SendResponse(ctx, 200, WrapSuccess("{\"action\":\"speed\",\"speed\":" + speed + ",\"queued\":true}"));
-        }
-
-        private void HandlePause(HttpListenerContext ctx, Dictionary<string, string> body)
-        {
-            string pausedStr;
-            if (!body.TryGetValue("paused", out pausedStr))
-            {
-                SendResponse(ctx, 400, WrapError("Missing paused"));
-                return;
-            }
-            bool paused = pausedStr == "true" || pausedStr == "1";
-            GameActionExecutor.SetPaused(paused);
-            SendResponse(ctx, 200, WrapSuccess("{\"action\":\"pause\",\"paused\":" + (paused ? "true" : "false") + ",\"queued\":true}"));
-        }
-
-        // --- Helpers ---
-
-        private void SendResponse(HttpListenerContext ctx, int statusCode, string json)
+        private void SendJson(HttpListenerContext ctx, int statusCode, string json)
         {
             try
             {
@@ -436,17 +327,10 @@ namespace ClaudeAdvisor
                 ctx.Response.OutputStream.Write(buf, 0, buf.Length);
                 ctx.Response.OutputStream.Close();
             }
-            catch (Exception) { }
-        }
-
-        private string WrapSuccess(string dataJson)
-        {
-            return "{\"success\":true,\"data\":" + dataJson + ",\"error\":null,\"timestamp\":\"" + DateTime.Now.ToString("o") + "\"}";
-        }
-
-        private string WrapError(string message)
-        {
-            return "{\"success\":false,\"data\":null,\"error\":\"" + JsonHelper.Escape(message) + "\",\"timestamp\":\"" + DateTime.Now.ToString("o") + "\"}";
+            catch (Exception ex)
+            {
+                Logger.Error("HTTP", "SendJson failed", ex);
+            }
         }
     }
 }

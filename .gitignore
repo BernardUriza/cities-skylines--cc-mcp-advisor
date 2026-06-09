@@ -1,9 +1,28 @@
+# Build artifacts
 *.dll
 *.pdb
 *.mdb
 obj/
 bin/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
 .vs/
+.idea/
+.vscode/
 *.user
 *.suo
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project
 claude_city_report.json

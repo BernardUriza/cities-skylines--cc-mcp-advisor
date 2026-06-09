@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Text;
 using System.Collections.Generic;
 
@@ -35,8 +36,8 @@ namespace ClaudeAdvisor
             if (val is int) return ((int)val).ToString();
             if (val is uint) return ((uint)val).ToString();
             if (val is long) return ((long)val).ToString();
-            if (val is float) return ((float)val).ToString();
-            if (val is double) return ((double)val).ToString();
+            if (val is float) return ((float)val).ToString(CultureInfo.InvariantCulture);
+            if (val is double) return ((double)val).ToString(CultureInfo.InvariantCulture);
             if (val is string) return "\"" + Escape((string)val) + "\"";
             if (val is Dictionary<string, object>)
                 return ToJson((Dictionary<string, object>)val);

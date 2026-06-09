@@ -1,6 +1,19 @@
 # Cities Skylines — Claude Code MCP Advisor
 
-AI companion for Cities: Skylines that connects [Claude Code](https://claude.ai/code) directly to your running game via [MCP](https://modelcontextprotocol.io/) (Model Context Protocol). Claude can read your city stats, demolish buildings, inject money, change taxes, and manage saves — all from the terminal.
+AI companion for Cities: Skylines that connects [Claude Code](https://claude.ai/code) directly to your running game via [MCP](https://modelcontextprotocol.io/) (Model Context Protocol). First-of-its-kind — no other MCP server exists for Cities: Skylines.
+
+Claude becomes your city advisor: it reads real-time city stats, diagnoses problems, adjusts budgets and taxes, demolishes buildings, sends in-game Chirper messages, takes screenshots, and manages save files — all from the terminal while you play.
+
+### What it looks like in action
+
+In a single session, Claude was able to:
+- Monitor a city growing from 3,596 to 16,164 inhabitants in real time
+- Detect and respond to an active flooding emergency, a garbage crisis, and a dirty water pandemic
+- Adjust budgets (police, education, garbage) and tax rates on the fly
+- Send in-game Chirper messages like a sarcastic city advisor
+- Identify congested roads by name and density percentage
+- Track education progress across generations of citizens
+- Take screenshots via desktop control to visually diagnose city layout problems
 
 ## Architecture
 
@@ -23,7 +36,10 @@ Claude Code  <--stdio/MCP-->  Python MCP Server  <--HTTP-->  C# Game Mod (port 7
 | `get_traffic` | Road segments, congestion, flow % |
 | `get_transport` | Bus, metro, train, tram lines |
 | `get_districts` | Districts with population and happiness |
-| `get_budget` | Money, weekly profit |
+| `get_budget` | Income/expense breakdown by service |
+| `get_problems` | All building problems (electricity, water, fire, crime, garbage, workers) |
+| `get_changes` | Delta detection between polls (population, money, abandoned, traffic) |
+| `take_screenshot` | Capture in-game screenshot |
 
 ### Write Tools
 | Tool | Description |
@@ -35,6 +51,7 @@ Claude Code  <--stdio/MCP-->  Python MCP Server  <--HTTP-->  C# Game Mod (port 7
 | `set_budget` | Change service budget (50-150%) |
 | `pause_game` | Pause/unpause simulation |
 | `set_game_speed` | Set speed (1-3) |
+| `send_chirp` | Send a message to the in-game Chirper feed as "Claude Advisor" |
 
 ### Save File Tools
 | Tool | Description |
@@ -92,9 +109,11 @@ python3 scripts/test_connection.py
 mod/                          # C# game mod (runs inside Unity)
   ClaudeAdvisorMod.cs         # Entry point (IUserMod)
   HttpCommandServer.cs        # HTTP server on port 7828
-  GameActionExecutor.cs       # Write operations (demolish, money, tax)
-  CityDataCollector.cs        # Read operations (stats, buildings, traffic)
-  JsonHelper.cs               # JSON utilities
+  RequestHandler.cs           # Request routing and service layer
+  GameActionExecutor.cs       # Write operations (demolish, money, tax, chirp)
+  CityDataCollector.cs        # Read operations (stats, buildings, traffic, problems)
+  Logger.cs                   # Structured logging with correlation IDs
+  JsonHelper.cs               # JSON utilities (no Newtonsoft dependency)
   build.sh                    # Compile script
 
 mcp_server/                   # Python MCP server (stdio transport)
@@ -121,6 +140,31 @@ scripts/
 - Python 3.10+
 - Mono (for compiling: `brew install mono`)
 - Claude Code
+
+## HTTP API Reference
+
+The mod exposes these endpoints on `localhost:7828`:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/health` | Health check |
+| GET | `/api/v1/stats` | Full city statistics |
+| GET | `/api/v1/buildings?type=X&flags=X&limit=N` | Building list with filters |
+| GET | `/api/v1/traffic` | Traffic data |
+| GET | `/api/v1/transport` | Transport lines |
+| GET | `/api/v1/districts` | Districts |
+| GET | `/api/v1/budget` | Economy with income/expense breakdown |
+| GET | `/api/v1/problems` | All building problems |
+| GET | `/api/v1/changes` | Delta detection between polls |
+| GET | `/api/v1/screenshot` | Trigger screenshot capture |
+| POST | `/api/v1/actions/demolish` | `{"buildingId": N}` |
+| POST | `/api/v1/actions/demolish-abandoned` | Mass demolish |
+| POST | `/api/v1/actions/money` | `{"amount": N}` |
+| POST | `/api/v1/actions/tax` | `{"service": "X", "rate": N}` |
+| POST | `/api/v1/actions/budget` | `{"service": "X", "budget": N}` |
+| POST | `/api/v1/actions/speed` | `{"speed": 1-3}` |
+| POST | `/api/v1/actions/pause` | `{"paused": true/false}` |
+| POST | `/api/v1/actions/chirp` | `{"message": "text"}` |
 
 ## License
 
